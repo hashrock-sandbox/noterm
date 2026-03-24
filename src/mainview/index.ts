@@ -110,28 +110,26 @@ function createInlineTerminal(termId: string, view: EditorView): HTMLElement {
 	t.open(termEl);
 
 	// OSC 133 detection for command state
-	const osc133Re = /\x1b\]133;([A-D])(;(\d+))?\x07/g;
+	// BEL (\x07) or ST (\x1b\\) as terminator
+	const osc133Re = /\x1b\]133;([A-D])(;(\d+))?(?:\x07|\x1b\\)/g;
 
 	outputHandlers.set(termId, (data) => {
 		// Detect OSC 133 sequences
 		let match;
 		while ((match = osc133Re.exec(data)) !== null) {
 			const code = match[1];
+			console.log(`[OSC 133] ${code}`, match[3] ?? "");
 			if (code === "C") {
-				// Command execution started
 				statusBar.className = "inline-terminal-status running";
 			} else if (code === "D") {
-				// Command finished
 				const exitCode = match[3] ? parseInt(match[3], 10) : 0;
 				statusBar.className = exitCode === 0
 					? "inline-terminal-status success"
 					: "inline-terminal-status error";
-				// Reset to idle after animation
 				setTimeout(() => {
 					statusBar.className = "inline-terminal-status";
 				}, 2000);
 			} else if (code === "A") {
-				// Prompt start - idle
 				statusBar.className = "inline-terminal-status";
 			}
 		}
@@ -141,6 +139,15 @@ function createInlineTerminal(termId: string, view: EditorView): HTMLElement {
 
 	t.onData((data) => {
 		electrobun.rpc!.send.input({ id: termId, data });
+	});
+
+	// Enable copy/paste in terminal
+	t.attachCustomKeyEventHandler((e) => {
+		// Let Cmd+C / Cmd+V pass through to browser
+		if (e.metaKey && (e.key === "c" || e.key === "v")) {
+			return false;
+		}
+		return true;
 	});
 
 	// ResizeObserver to notify CM of height changes

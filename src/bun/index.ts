@@ -1,4 +1,4 @@
-import { BrowserView, BrowserWindow, type RPCSchema } from "electrobun/bun";
+import { BrowserView, BrowserWindow, ApplicationMenu, type RPCSchema } from "electrobun/bun";
 import { spawn } from "bun-pty";
 
 type TerminalRPC = {
@@ -100,5 +100,35 @@ const mainWindow = new BrowserWindow({
 		y: 200,
 	},
 });
+
+// Application menu with Edit roles for copy/paste support
+ApplicationMenu.setApplicationMenu([
+	{
+		label: "noterm",
+		type: "normal",
+		submenu: [
+			{ role: "about" },
+			{ type: "separator" },
+			{ role: "hide" },
+			{ role: "hideOthers" },
+			{ role: "showAll" },
+			{ type: "separator" },
+			{ role: "quit" },
+		],
+	},
+	{
+		label: "Edit",
+		type: "normal",
+		submenu: [
+			{ role: "undo" },
+			{ role: "redo" },
+			{ type: "separator" },
+			{ role: "cut" },
+			{ role: "copy" },
+			{ role: "paste" },
+			{ role: "selectAll" },
+		],
+	},
+]);
 
 console.log("noterm started!");
