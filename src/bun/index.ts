@@ -7,8 +7,12 @@ type TerminalRPC = {
 	bun: RPCSchema<{
 		requests: {
 			createTerminal: {
-				params: { cols: number; rows: number };
+				params: { cols: number; rows: number; cwd?: string };
 				response: { id: string };
+			};
+			getCwd: {
+				params: { id: string };
+				response: { cwd: string | null };
 			};
 			resize: {
 				params: { id: string; cols: number; rows: number };
@@ -47,10 +51,16 @@ const shellArgs = shell.endsWith("zsh") || shell.endsWith("bash") ? ["-il"] : []
 const ptyMap = new Map<string, ReturnType<typeof spawn>>();
 let idCounter = 0;
 
-function createPty(cols: number, rows: number): string {
+function resolveCwd(cwd?: string): string {
+	if (!cwd || cwd === "~") return Bun.env["HOME"] || "/";
+	if (cwd.startsWith("~/")) return join(Bun.env["HOME"] || "/", cwd.slice(2));
+	return cwd;
+}
+
+function createPty(cols: number, rows: number, cwd?: string): string {
 	const id = `term-${idCounter++}`;
 	const pty = spawn(shell, shellArgs, {
-		cwd: Bun.env["HOME"] || "/",
+		cwd: resolveCwd(cwd),
 		cols,
 		rows,
 		name: "xterm-256color",
@@ -98,9 +108,23 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
 	maxRequestTime: 10000,
 	handlers: {
 		requests: {
-			createTerminal: ({ cols, rows }) => {
-				const id = createPty(cols, rows);
+			createTerminal: ({ cols, rows, cwd }) => {
+				const id = createPty(cols, rows, cwd);
 				return { id };
+			},
+			getCwd: ({ id }) => {
+				const pty = ptyMap.get(id);
+				if (!pty) return { cwd: null };
+				try {
+					const result = Bun.spawnSync({
+						cmd: ["lsof", "-a", "-d", "cwd", "-Fn", "-p", String(pty.pid)],
+					});
+					const output = result.stdout.toString();
+					const match = output.match(/\nn(.*)/);
+					return { cwd: match ? match[1] : null };
+				} catch {
+					return { cwd: null };
+				}
 			},
 			saveDoc: async ({ content }) => {
 				await Bun.write(docPath, content);
@@ -133,17 +157,38 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
 	},
 });
 
+// Window state persistence
+const windowStatePath = join(dataDir, "window-state.json");
+
+function loadWindowState(): { width: number; height: number; x: number; y: number } {
+	try {
+		if (existsSync(windowStatePath)) {
+			const data = require("fs").readFileSync(windowStatePath, "utf-8");
+			return JSON.parse(data);
+		}
+	} catch {}
+	return { width: 800, height: 900, x: 200, y: 200 };
+}
+
+const savedFrame = loadWindowState();
+
 const mainWindow = new BrowserWindow({
 	title: "noterm",
 	url: "views://mainview/index.html",
 	rpc: terminalRPC,
-	frame: {
-		width: 800,
-		height: 900,
-		x: 200,
-		y: 200,
-	},
+	frame: savedFrame,
+	titleBarStyle: "hiddenInset",
 });
+
+// Periodically save window state
+setInterval(async () => {
+	try {
+		const frame = mainWindow.getFrame();
+		if (frame) {
+			await Bun.write(windowStatePath, JSON.stringify(frame));
+		}
+	} catch {}
+}, 5000);
 
 // Application menu with Edit roles for copy/paste support
 ApplicationMenu.setApplicationMenu([

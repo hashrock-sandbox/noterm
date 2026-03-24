@@ -33,8 +33,12 @@ type TerminalRPC = {
 	bun: {
 		requests: {
 			createTerminal: {
-				params: { cols: number; rows: number };
+				params: { cols: number; rows: number; cwd?: string };
 				response: { id: string };
+			};
+			getCwd: {
+				params: { id: string };
+				response: { cwd: string | null };
 			};
 			resize: {
 				params: { id: string; cols: number; rows: number };
@@ -488,6 +492,25 @@ function slashCommandCompletion(context: CompletionContext) {
 						});
 				},
 			},
+			{
+				label: "/duplicate",
+				detail: "Duplicate terminal with same cwd",
+				apply: (view: EditorView, _completion: any, from: number, to: number) => {
+					const line = view.state.doc.lineAt(from);
+					const termId = findNearestTerminalAbove(view, from);
+					if (!termId) return;
+					electrobun.rpc!.request.getCwd({ id: termId }).then(({ cwd }) => {
+						electrobun
+							.rpc!.request.createTerminal({ cols: 80, rows: 10, cwd: cwd ?? undefined })
+							.then(({ id }) => {
+								view.dispatch({
+									changes: { from: line.from, to: line.to, insert: "" },
+									effects: addTerminalEffect.of({ pos: line.from, id }),
+								});
+							});
+					});
+				},
+			},
 		],
 	};
 }
@@ -544,6 +567,23 @@ function handleEnter(view: EditorView): boolean {
 					effects: addTerminalEffect.of({ pos: line.from, id }),
 				});
 			});
+		return true;
+	}
+
+	// Execute /duplicate command
+	if (line.text.trim() === "/duplicate") {
+		const termId = findNearestTerminalAbove(view, line.from);
+		if (!termId) return false;
+		electrobun.rpc!.request.getCwd({ id: termId }).then(({ cwd }) => {
+			electrobun
+				.rpc!.request.createTerminal({ cols: 80, rows: 10, cwd: cwd ?? undefined })
+				.then(({ id }) => {
+					view.dispatch({
+						changes: { from: line.from, to: line.to, insert: "" },
+						effects: addTerminalEffect.of({ pos: line.from, id }),
+					});
+				});
+		});
 		return true;
 	}
 
