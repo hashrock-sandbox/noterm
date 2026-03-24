@@ -1,0 +1,21 @@
+{
+	"name": "noterm",
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Terminal app built with Electrobun and xterm.js",
+	"scripts": {
+		"start": "electrobun dev",
+		"dev": "electrobun dev --watch",
+		"build:canary": "electrobun build --env=canary"
+	},
+	"dependencies": {
+		"@xterm/addon-fit": "^0.11.0",
+		"@xterm/xterm": "^6.0.0",
+		"bun-pty": "^0.4.8",
+		"electrobun": "1.16.0"
+	},
+	"devDependencies": {
+		"@types/bun": "latest",
+		"typescript": "^5.7.2"
+	}
+}
