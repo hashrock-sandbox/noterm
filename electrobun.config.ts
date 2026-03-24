@@ -19,6 +19,8 @@ export default {
 			"src/mainview/index.html": "views/mainview/index.html",
 			"src/mainview/index.css": "views/mainview/index.css",
 			"node_modules/@xterm/xterm/css/xterm.css": "views/mainview/xterm.css",
+			"node_modules/bun-pty/rust-pty/target/release/librust_pty_arm64.dylib": "bun/rust-pty/target/release/librust_pty_arm64.dylib",
+			"node_modules/bun-pty/rust-pty/target/release/librust_pty.dylib": "bun/rust-pty/target/release/librust_pty.dylib",
 		},
 		mac: {
 			bundleCEF: false,
