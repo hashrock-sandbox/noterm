@@ -4,19 +4,23 @@ import { spawn } from "bun-pty";
 type TerminalRPC = {
 	bun: RPCSchema<{
 		requests: {
-			resize: {
+			createTerminal: {
 				params: { cols: number; rows: number };
+				response: { id: string };
+			};
+			resize: {
+				params: { id: string; cols: number; rows: number };
 				response: { success: boolean };
 			};
 		};
 		messages: {
-			input: { data: string };
+			input: { id: string; data: string };
 		};
 	}>;
 	webview: RPCSchema<{
 		requests: {};
 		messages: {
-			output: { data: string };
+			output: { id: string; data: string };
 		};
 	}>;
 };
@@ -24,76 +28,77 @@ type TerminalRPC = {
 const shell = Bun.env["SHELL"] || "/bin/zsh";
 const shellArgs = shell.endsWith("zsh") || shell.endsWith("bash") ? ["-il"] : [];
 
-const pty = spawn(shell, shellArgs, {
-	cwd: Bun.env["HOME"] || "/",
-	cols: 80,
-	rows: 24,
-	name: "xterm-256color",
-	env: {
-		...Bun.env,
-		TERM: "xterm-256color",
-		COLORTERM: "truecolor",
-	},
-});
+const ptyMap = new Map<string, ReturnType<typeof spawn>>();
+let idCounter = 0;
 
-console.log(`PTY spawned: ${shell}, pid: ${pty.pid}`);
+function createPty(cols: number, rows: number): string {
+	const id = `term-${idCounter++}`;
+	const pty = spawn(shell, shellArgs, {
+		cwd: Bun.env["HOME"] || "/",
+		cols,
+		rows,
+		name: "xterm-256color",
+		env: {
+			...Bun.env,
+			TERM: "xterm-256color",
+			COLORTERM: "truecolor",
+		},
+	});
 
-let rpcReady = false;
-let outputBuffer: string[] = [];
+	ptyMap.set(id, pty);
+
+	pty.onData((data: string) => {
+		terminalRPC.send.output({ id, data });
+	});
+
+	pty.onExit(({ exitCode }: { exitCode: number }) => {
+		console.log(`PTY ${id} exited with code ${exitCode}`);
+		terminalRPC.send.output({ id, data: `\r\n[Process exited with code ${exitCode}]\r\n` });
+		ptyMap.delete(id);
+	});
+
+	console.log(`PTY created: ${id}, pid: ${pty.pid}`);
+	return id;
+}
 
 const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
 	maxRequestTime: 10000,
 	handlers: {
 		requests: {
-			resize: ({ cols, rows }) => {
-				pty.resize(cols, rows);
-				return { success: true };
+			createTerminal: ({ cols, rows }) => {
+				const id = createPty(cols, rows);
+				return { id };
+			},
+			resize: ({ id, cols, rows }) => {
+				const pty = ptyMap.get(id);
+				if (pty) {
+					pty.resize(cols, rows);
+					return { success: true };
+				}
+				return { success: false };
 			},
 		},
 		messages: {
-			input: ({ data }) => {
-				pty.write(data);
+			input: ({ id, data }) => {
+				const pty = ptyMap.get(id);
+				if (pty) {
+					pty.write(data);
+				}
 			},
 		},
 	},
 });
 
-function sendOutput(text: string) {
-	if (rpcReady) {
-		terminalRPC.send.output({ data: text });
-	} else {
-		outputBuffer.push(text);
-	}
-}
-
-pty.onData((data: string) => {
-	sendOutput(data);
-});
-
-pty.onExit(({ exitCode }: { exitCode: number }) => {
-	console.log(`Shell exited with code ${exitCode}`);
-	sendOutput(`\r\n[Process exited with code ${exitCode}]\r\n`);
-});
-
 const mainWindow = new BrowserWindow({
-	title: "Terminal",
+	title: "noterm",
 	url: "views://mainview/index.html",
 	rpc: terminalRPC,
 	frame: {
 		width: 800,
-		height: 500,
+		height: 900,
 		x: 200,
 		y: 200,
 	},
 });
 
-mainWindow.on("dom-ready", () => {
-	console.log("DOM ready, flushing buffer");
-	rpcReady = true;
-	for (const text of outputBuffer) {
-		terminalRPC.send.output({ data: text });
-	}
-	outputBuffer = [];
-});
-
-console.log("Terminal app started!");
+console.log("noterm started!");

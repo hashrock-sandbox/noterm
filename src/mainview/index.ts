@@ -1,28 +1,51 @@
 import Electrobun, { Electroview } from "electrobun/view";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { EditorView, basicSetup } from "codemirror";
+import { EditorView, minimalSetup } from "codemirror";
+import { lineNumbers, highlightActiveLineGutter, highlightActiveLine } from "@codemirror/view";
+import { bracketMatching, foldGutter } from "@codemirror/language";
+import { history, historyKeymap } from "@codemirror/commands";
 import { javascript } from "@codemirror/lang-javascript";
 import { oneDark } from "@codemirror/theme-one-dark";
+import {
+	StateField,
+	StateEffect,
+	Prec,
+	type Range,
+} from "@codemirror/state";
+import {
+	Decoration,
+	WidgetType,
+	keymap,
+	type DecorationSet,
+} from "@codemirror/view";
+
+// --- Output routing ---
+
+const outputHandlers = new Map<string, (data: string) => void>();
 
 // --- RPC ---
 
 type TerminalRPC = {
 	bun: {
 		requests: {
-			resize: {
+			createTerminal: {
 				params: { cols: number; rows: number };
+				response: { id: string };
+			};
+			resize: {
+				params: { id: string; cols: number; rows: number };
 				response: { success: boolean };
 			};
 		};
 		messages: {
-			input: { data: string };
+			input: { id: string; data: string };
 		};
 	};
 	webview: {
 		requests: {};
 		messages: {
-			output: { data: string };
+			output: { id: string; data: string };
 		};
 	};
 };
@@ -32,8 +55,9 @@ const rpc = Electroview.defineRPC<TerminalRPC>({
 	handlers: {
 		requests: {},
 		messages: {
-			output: ({ data }) => {
-				term.write(data);
+			output: ({ id, data }) => {
+				const handler = outputHandlers.get(id);
+				if (handler) handler(data);
 			},
 		},
 	},
@@ -41,82 +65,212 @@ const rpc = Electroview.defineRPC<TerminalRPC>({
 
 const electrobun = new Electrobun.Electroview({ rpc });
 
+// --- Inline terminal cache ---
+
+const terminalCache = new Map<
+	string,
+	{ term: Terminal; fitAddon: FitAddon; element: HTMLElement }
+>();
+
+function createInlineTerminal(termId: string, view: EditorView): HTMLElement {
+	const existing = terminalCache.get(termId);
+	if (existing) return existing.element;
+
+	const outer = document.createElement("div");
+	outer.className = "inline-terminal-wrapper";
+
+	const termEl = document.createElement("div");
+	termEl.className = "inline-terminal";
+
+	const resizeHandle = document.createElement("div");
+	resizeHandle.className = "inline-terminal-resize";
+
+	outer.appendChild(termEl);
+	outer.appendChild(resizeHandle);
+
+	const t = new Terminal({
+		rows: 3,
+		cursorBlink: true,
+		fontSize: 13,
+		fontFamily: "Menlo, Monaco, 'Courier New', monospace",
+		scrollback: 1000,
+		theme: {
+			background: "#282c34",
+			foreground: "#abb2bf",
+			cursor: "#528bff",
+		},
+	});
+
+	const fit = new FitAddon();
+	t.loadAddon(fit);
+	t.open(termEl);
+
+	outputHandlers.set(termId, (data) => t.write(data));
+
+	t.onData((data) => {
+		electrobun.rpc!.send.input({ id: termId, data });
+	});
+
+	// ResizeObserver to notify CM of height changes
+	const ro = new ResizeObserver(() => {
+		view.requestMeasure();
+	});
+	ro.observe(outer);
+
+	// Drag to resize
+	let dragging = false;
+	let startY = 0;
+	let startH = 0;
+
+	resizeHandle.addEventListener("mousedown", (e) => {
+		dragging = true;
+		startY = e.clientY;
+		startH = termEl.offsetHeight;
+		e.preventDefault();
+	});
+
+	function getRowHeight(): number {
+		const core = (t as any)._core;
+		return core?._renderService?.dimensions?.css?.cell?.height || 17;
+	}
+
+	function snapHeight(rawH: number): number {
+		const rowH = getRowHeight();
+		const rows = Math.max(1, Math.ceil(rawH / rowH));
+		return rows * rowH;
+	}
+
+	document.addEventListener("mousemove", (e) => {
+		if (!dragging) return;
+		const rawH = startH + (e.clientY - startY);
+		const newH = snapHeight(rawH);
+		termEl.style.height = `${newH}px`;
+		fit.fit();
+	});
+
+	document.addEventListener("mouseup", () => {
+		if (!dragging) return;
+		dragging = false;
+		fit.fit();
+		electrobun.rpc!.request.resize({
+			id: termId,
+			cols: t.cols,
+			rows: t.rows,
+		});
+	});
+
+	requestAnimationFrame(() => {
+		fit.fit();
+		electrobun.rpc!.request.resize({
+			id: termId,
+			cols: t.cols,
+			rows: t.rows,
+		});
+	});
+
+	terminalCache.set(termId, { term: t, fitAddon: fit, element: outer });
+	return outer;
+}
+
+// --- CodeMirror terminal widget ---
+
+class TerminalWidget extends WidgetType {
+	constructor(readonly termId: string) {
+		super();
+	}
+
+	eq(other: TerminalWidget) {
+		return this.termId === other.termId;
+	}
+
+	toDOM(view: EditorView) {
+		return createInlineTerminal(this.termId, view);
+	}
+
+	get estimatedHeight() {
+		return 66;
+	}
+
+	ignoreEvent() {
+		return true;
+	}
+}
+
+// --- CodeMirror state for inline terminals ---
+
+const addTerminalEffect = StateEffect.define<{ pos: number; id: string }>();
+
+const terminalField = StateField.define<DecorationSet>({
+	create() {
+		return Decoration.none;
+	},
+	update(decos, tr) {
+		decos = decos.map(tr.changes);
+		for (const effect of tr.effects) {
+			if (effect.is(addTerminalEffect)) {
+				const deco = Decoration.widget({
+					widget: new TerminalWidget(effect.value.id),
+					block: true,
+				});
+				const newDecos: Range<Decoration>[] = [];
+				const iter = decos.iter();
+				while (iter.value) {
+					newDecos.push(iter.value.range(iter.from, iter.to));
+					iter.next();
+				}
+				newDecos.push(deco.range(effect.value.pos));
+				newDecos.sort((a, b) => a.from - b.from);
+				decos = Decoration.set(newDecos);
+			}
+		}
+		return decos;
+	},
+	provide: (f) => EditorView.decorations.from(f),
+});
+
+// --- /term keymap ---
+
+const termCommand = keymap.of([
+	{
+		key: "Enter",
+		run(view) {
+			const { state } = view;
+			const line = state.doc.lineAt(state.selection.main.head);
+			if (line.text.trim() !== "/term") return false;
+
+			electrobun
+				.rpc!.request.createTerminal({ cols: 80, rows: 3 })
+				.then(({ id }) => {
+					view.dispatch({
+						changes: { from: line.from, to: line.to, insert: "" },
+						effects: addTerminalEffect.of({ pos: line.from, id }),
+					});
+				});
+
+			return true;
+		},
+	},
+]);
+
 // --- CodeMirror ---
 
 const editorContainer = document.getElementById("editor")!;
 
 new EditorView({
-	doc: "// Hello, noterm!\n",
-	extensions: [basicSetup, javascript(), oneDark],
+	doc: "// noterm - type /term to embed a terminal\n\n",
+	extensions: [
+		minimalSetup,
+		lineNumbers(),
+		highlightActiveLineGutter(),
+		highlightActiveLine(),
+		bracketMatching(),
+		foldGutter(),
+		history(),
+		keymap.of(historyKeymap),
+		javascript(),
+		oneDark,
+		terminalField,
+		Prec.highest(termCommand),
+	],
 	parent: editorContainer,
 });
-
-// --- xterm.js ---
-
-const terminalContainer = document.getElementById("terminal")!;
-
-const term = new Terminal({
-	cursorBlink: true,
-	fontSize: 14,
-	fontFamily: "Menlo, Monaco, 'Courier New', monospace",
-	theme: {
-		background: "#1e1e1e",
-		foreground: "#d4d4d4",
-		cursor: "#d4d4d4",
-	},
-});
-
-const fitAddon = new FitAddon();
-term.loadAddon(fitAddon);
-term.open(terminalContainer);
-fitAddon.fit();
-
-term.onData((data) => {
-	electrobun.rpc!.send.input({ data });
-});
-
-// --- Divider drag to resize ---
-
-const divider = document.getElementById("divider")!;
-const app = document.getElementById("app")!;
-
-let dragging = false;
-
-divider.addEventListener("mousedown", (e) => {
-	dragging = true;
-	e.preventDefault();
-});
-
-document.addEventListener("mousemove", (e) => {
-	if (!dragging) return;
-	const appRect = app.getBoundingClientRect();
-	const ratio = (e.clientY - appRect.top) / appRect.height;
-	const clampedRatio = Math.max(0.1, Math.min(0.9, ratio));
-
-	editorContainer.style.flex = "none";
-	editorContainer.style.height = `${clampedRatio * 100}%`;
-	terminalContainer.style.height = `${(1 - clampedRatio) * 100}%`;
-
-	fitAddon.fit();
-});
-
-document.addEventListener("mouseup", () => {
-	if (dragging) {
-		dragging = false;
-		fitAddon.fit();
-		electrobun.rpc!.request.resize({ cols: term.cols, rows: term.rows });
-	}
-});
-
-// --- Resize handling ---
-
-const resizeObserver = new ResizeObserver(() => {
-	fitAddon.fit();
-	electrobun.rpc!.request.resize({ cols: term.cols, rows: term.rows });
-});
-resizeObserver.observe(terminalContainer);
-
-setTimeout(() => {
-	fitAddon.fit();
-	electrobun.rpc!.request.resize({ cols: term.cols, rows: term.rows });
-}, 100);
