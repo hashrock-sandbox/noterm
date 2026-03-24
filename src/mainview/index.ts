@@ -113,24 +113,29 @@ function createInlineTerminal(termId: string, view: EditorView): HTMLElement {
 	// BEL (\x07) or ST (\x1b\\) as terminator
 	const osc133Re = /\x1b\]133;([A-D])(;(\d+))?(?:\x07|\x1b\\)/g;
 
+	let resultTimer: ReturnType<typeof setTimeout> | null = null;
+
 	outputHandlers.set(termId, (data) => {
-		// Detect OSC 133 sequences
 		let match;
 		while ((match = osc133Re.exec(data)) !== null) {
 			const code = match[1];
-			console.log(`[OSC 133] ${code}`, match[3] ?? "");
 			if (code === "C") {
+				if (resultTimer) { clearTimeout(resultTimer); resultTimer = null; }
 				statusBar.className = "inline-terminal-status running";
 			} else if (code === "D") {
 				const exitCode = match[3] ? parseInt(match[3], 10) : 0;
 				statusBar.className = exitCode === 0
 					? "inline-terminal-status success"
 					: "inline-terminal-status error";
-				setTimeout(() => {
+				resultTimer = setTimeout(() => {
 					statusBar.className = "inline-terminal-status";
+					resultTimer = null;
 				}, 2000);
 			} else if (code === "A") {
-				statusBar.className = "inline-terminal-status";
+				// Don't reset if showing result animation
+				if (!resultTimer) {
+					statusBar.className = "inline-terminal-status";
+				}
 			}
 		}
 		osc133Re.lastIndex = 0;
