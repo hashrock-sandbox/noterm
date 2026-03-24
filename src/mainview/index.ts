@@ -113,6 +113,7 @@ function createInlineTerminal(termId: string, view: EditorView): HTMLElement {
 
 	// ResizeObserver to notify CM of height changes
 	const ro = new ResizeObserver(() => {
+		(view as any).viewState.mustMeasureContent = true;
 		view.requestMeasure();
 	});
 	ro.observe(outer);
