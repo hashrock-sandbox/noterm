@@ -83,10 +83,27 @@ body {
 }
 
 .inline-terminal {
-	height: 66px;
+	height: 190px;
 	border: 1px solid #444;
 	border-radius: 0 0 4px 4px;
 	overflow: hidden;
+	transition: border-color 0.15s;
+}
+
+.inline-terminal-wrapper.focused .inline-terminal {
+	border-color: #528bff;
+}
+
+.inline-terminal-wrapper.focused::before {
+	content: "Enter to focus · Ctrl+` / Ctrl+O to return";
+	position: absolute;
+	top: -14px;
+	left: 8px;
+	font-size: 10px;
+	font-family: Menlo, Monaco, 'Courier New', monospace;
+	color: #528bff;
+	z-index: 1;
+	pointer-events: none;
 }
 
 .inline-terminal-resize {
@@ -97,4 +114,27 @@ body {
 
 .inline-terminal-resize:hover {
 	background: #007aff;
+}
+
+.inline-button {
+	display: inline-block;
+	padding: 2px 12px;
+	font-size: 12px;
+	font-family: Menlo, Monaco, 'Courier New', monospace;
+	background: #333;
+	color: #abb2bf;
+	border: 1px solid #555;
+	border-radius: 4px;
+	cursor: pointer;
+	transition: background 0.15s, border-color 0.15s;
+}
+
+.inline-button:hover {
+	background: #444;
+	border-color: #528bff;
+}
+
+.inline-button:active {
+	background: #528bff;
+	color: #fff;
 }

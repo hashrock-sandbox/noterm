@@ -1,5 +1,7 @@
-import { BrowserView, BrowserWindow, ApplicationMenu, type RPCSchema } from "electrobun/bun";
+import { BrowserView, BrowserWindow, ApplicationMenu, Utils, type RPCSchema } from "electrobun/bun";
 import { spawn } from "bun-pty";
+import { join } from "path";
+import { existsSync, mkdirSync } from "fs";
 
 type TerminalRPC = {
 	bun: RPCSchema<{
@@ -12,6 +14,14 @@ type TerminalRPC = {
 				params: { id: string; cols: number; rows: number };
 				response: { success: boolean };
 			};
+			saveDoc: {
+				params: { content: string };
+				response: { success: boolean };
+			};
+			loadDoc: {
+				params: {};
+				response: { content: string | null };
+			};
 		};
 		messages: {
 			input: { id: string; data: string };
@@ -21,9 +31,15 @@ type TerminalRPC = {
 		requests: {};
 		messages: {
 			output: { id: string; data: string };
+			terminalExited: { id: string; exitCode: number };
 		};
 	}>;
 };
+
+// Document storage
+const dataDir = join(Utils.paths.userData, "docs");
+if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+const docPath = join(dataDir, "scratch.md");
 
 const shell = Bun.env["SHELL"] || "/bin/zsh";
 const shellArgs = shell.endsWith("zsh") || shell.endsWith("bash") ? ["-il"] : [];
@@ -53,8 +69,8 @@ function createPty(cols: number, rows: number): string {
 
 	pty.onExit(({ exitCode }: { exitCode: number }) => {
 		console.log(`PTY ${id} exited with code ${exitCode}`);
-		terminalRPC.send.output({ id, data: `\r\n[Process exited with code ${exitCode}]\r\n` });
 		ptyMap.delete(id);
+		terminalRPC.send.terminalExited({ id, exitCode });
 	});
 
 	// Inject shell integration for OSC 133 semantic prompts
@@ -85,6 +101,17 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
 			createTerminal: ({ cols, rows }) => {
 				const id = createPty(cols, rows);
 				return { id };
+			},
+			saveDoc: async ({ content }) => {
+				await Bun.write(docPath, content);
+				return { success: true };
+			},
+			loadDoc: () => {
+				if (existsSync(docPath)) {
+					const text = require("fs").readFileSync(docPath, "utf-8");
+					return { content: text };
+				}
+				return { content: null };
 			},
 			resize: ({ id, cols, rows }) => {
 				const pty = ptyMap.get(id);
