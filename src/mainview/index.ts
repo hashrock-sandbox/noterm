@@ -82,6 +82,9 @@ function createInlineTerminal(termId: string, view: EditorView): HTMLElement {
 	const statusBar = document.createElement("div");
 	statusBar.className = "inline-terminal-status";
 
+	const titleEl = document.createElement("div");
+	titleEl.className = "inline-terminal-title";
+
 	const termEl = document.createElement("div");
 	termEl.className = "inline-terminal";
 
@@ -89,6 +92,7 @@ function createInlineTerminal(termId: string, view: EditorView): HTMLElement {
 	resizeHandle.className = "inline-terminal-resize";
 
 	outer.appendChild(statusBar);
+	outer.appendChild(titleEl);
 	outer.appendChild(termEl);
 	outer.appendChild(resizeHandle);
 
@@ -109,6 +113,9 @@ function createInlineTerminal(termId: string, view: EditorView): HTMLElement {
 	t.loadAddon(fit);
 	t.open(termEl);
 
+	// OSC 0 (window title) detection
+	const osc0Re = /\x1b\]0;([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+
 	// OSC 133 detection for command state
 	// BEL (\x07) or ST (\x1b\\) as terminator
 	const osc133Re = /\x1b\]133;([A-D])(;(\d+))?(?:\x07|\x1b\\)/g;
@@ -121,7 +128,7 @@ function createInlineTerminal(termId: string, view: EditorView): HTMLElement {
 			const code = match[1];
 			if (code === "C") {
 				if (resultTimer) { clearTimeout(resultTimer); resultTimer = null; }
-				statusBar.className = "inline-terminal-status running";
+				statusBar.className = "inline-terminal-status";
 			} else if (code === "D") {
 				const exitCode = match[3] ? parseInt(match[3], 10) : 0;
 				statusBar.className = exitCode === 0
@@ -139,6 +146,14 @@ function createInlineTerminal(termId: string, view: EditorView): HTMLElement {
 			}
 		}
 		osc133Re.lastIndex = 0;
+
+		// Detect OSC 0 (window title)
+		let titleMatch;
+		while ((titleMatch = osc0Re.exec(data)) !== null) {
+			titleEl.textContent = titleMatch[1];
+		}
+		osc0Re.lastIndex = 0;
+
 		t.write(data);
 	});
 

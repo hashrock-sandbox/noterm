@@ -57,6 +57,23 @@ function createPty(cols: number, rows: number): string {
 		ptyMap.delete(id);
 	});
 
+	// Inject shell integration for OSC 133 semantic prompts
+	if (shell.endsWith("zsh")) {
+		pty.write([
+			`precmd()  { printf '\\e]133;D;%s\\a\\e]133;A\\a' "$?" }`,
+			`preexec() { printf '\\e]133;C\\a' }`,
+			"clear",
+			"",
+		].join("\n"));
+	} else if (shell.endsWith("bash")) {
+		pty.write([
+			`PROMPT_COMMAND='printf "\\e]133;D;\$?\\a\\e]133;A\\a"'`,
+			`trap 'printf "\\e]133;C\\a"' DEBUG`,
+			"clear",
+			"",
+		].join("\n"));
+	}
+
 	console.log(`PTY created: ${id}, pid: ${pty.pid}`);
 	return id;
 }

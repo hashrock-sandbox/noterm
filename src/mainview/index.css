@@ -34,10 +34,20 @@ body {
 	position: relative;
 }
 
-.inline-terminal-status.running {
-	background: linear-gradient(90deg, transparent, #528bff, transparent);
-	background-size: 200% 100%;
-	animation: status-running 1.2s ease-in-out infinite;
+.inline-terminal-title {
+	position: absolute;
+	top: 4px;
+	right: 8px;
+	font-size: 11px;
+	font-family: Menlo, Monaco, 'Courier New', monospace;
+	color: #666;
+	z-index: 1;
+	pointer-events: none;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 60%;
+	text-align: right;
 }
 
 .inline-terminal-status.success {
@@ -48,15 +58,6 @@ body {
 .inline-terminal-status.error {
 	background: #e06c75;
 	animation: status-flash 0.3s ease-in-out 3, status-fade 2s ease-out 0.9s forwards;
-}
-
-@keyframes status-running {
-	0% {
-		background-position: -200% 0;
-	}
-	100% {
-		background-position: 200% 0;
-	}
 }
 
 @keyframes status-fade {
