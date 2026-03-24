@@ -44,6 +44,22 @@ type TerminalRPC = {
 				params: { id: string; cols: number; rows: number };
 				response: { success: boolean };
 			};
+			readFile: {
+				params: { path: string; cwd?: string };
+				response: { content: string | null; resolvedPath: string };
+			};
+			watchFile: {
+				params: { path: string; cwd?: string };
+				response: { success: boolean; resolvedPath: string };
+			};
+			unwatchFile: {
+				params: { path: string };
+				response: { success: boolean };
+			};
+			searchFiles: {
+				params: { cwd: string; query: string };
+				response: { files: string[] };
+			};
 			saveDoc: {
 				params: { content: string };
 				response: { success: boolean };
@@ -62,6 +78,7 @@ type TerminalRPC = {
 		messages: {
 			output: { id: string; data: string };
 			terminalExited: { id: string; exitCode: number };
+			fileChanged: { path: string; content: string };
 		};
 	};
 };
@@ -80,6 +97,12 @@ const rpc = Electroview.defineRPC<TerminalRPC>({
 			},
 			terminalExited: ({ id }) => {
 				replaceTerminalWithText(id);
+			},
+			fileChanged: ({ path, content }) => {
+				const viewers = fileViewerCache.get(path);
+				if (viewers) {
+					for (const v of viewers) v.updateContent(content);
+				}
 			},
 		},
 	},
@@ -460,6 +483,150 @@ const buttonDecorations = ViewPlugin.fromClass(
 	{ decorations: (v) => v.decorations },
 );
 
+// --- File viewer widget ---
+
+const fileViewerCache = new Map<string, Set<FileViewerInstance>>();
+
+interface FileViewerInstance {
+	updateContent(content: string): void;
+}
+
+class FileViewerWidget extends WidgetType {
+	constructor(readonly path: string) {
+		super();
+	}
+
+	eq(other: FileViewerWidget) {
+		return this.path === other.path;
+	}
+
+	toDOM(view: EditorView) {
+		return createFileViewer(this.path, view);
+	}
+
+	get estimatedHeight() {
+		return 120;
+	}
+
+	ignoreEvent() {
+		return true;
+	}
+}
+
+function createFileViewer(path: string, view: EditorView): HTMLElement {
+	const wrapper = document.createElement("div");
+	wrapper.className = "inline-file-viewer";
+
+	const header = document.createElement("div");
+	header.className = "inline-file-viewer-header";
+
+	const pathLabel = document.createElement("span");
+	pathLabel.className = "inline-file-viewer-path";
+	pathLabel.textContent = path;
+
+	const watchBadge = document.createElement("span");
+	watchBadge.className = "inline-file-viewer-watch";
+	watchBadge.textContent = "watching";
+
+	header.appendChild(pathLabel);
+	header.appendChild(watchBadge);
+
+	const content = document.createElement("pre");
+	content.className = "inline-file-viewer-content";
+	content.textContent = "Loading...";
+
+	wrapper.appendChild(header);
+	wrapper.appendChild(content);
+
+	// ResizeObserver for CM height tracking
+	const ro = new ResizeObserver(() => {
+		(view as any).viewState.mustMeasureContent = true;
+		view.requestMeasure();
+	});
+	ro.observe(wrapper);
+
+	const instance: FileViewerInstance = {
+		updateContent(text: string) {
+			content.textContent = text;
+		},
+	};
+
+	// Register in cache
+	if (!fileViewerCache.has(path)) {
+		fileViewerCache.set(path, new Set());
+	}
+	fileViewerCache.get(path)!.add(instance);
+
+	// Resolve cwd from nearest terminal above for relative paths
+	const isRelative = !path.startsWith("/") && !path.startsWith("~");
+	let cwdPromise: Promise<string | undefined> = Promise.resolve(undefined);
+	if (isRelative) {
+		const termId = findNearestTerminalAbove(view, view.posAtDOM(wrapper));
+		if (termId) {
+			cwdPromise = electrobun.rpc!.request.getCwd({ id: termId }).then(r => r.cwd ?? undefined);
+		}
+	}
+
+	// Load file and start watching
+	let resolvedPath = path;
+	cwdPromise.then((cwd) => {
+		electrobun.rpc!.request.readFile({ path, cwd }).then(({ content: text, resolvedPath: rp }) => {
+			resolvedPath = rp;
+			content.textContent = text ?? `File not found: ${rp}`;
+			pathLabel.textContent = rp;
+
+			// Register under resolved path for watch updates
+			if (!fileViewerCache.has(rp)) fileViewerCache.set(rp, new Set());
+			fileViewerCache.get(rp)!.add(instance);
+		});
+
+		electrobun.rpc!.request.watchFile({ path, cwd }).then(({ success, resolvedPath: rp }) => {
+			if (!success) {
+				watchBadge.textContent = "not found";
+				watchBadge.classList.add("error");
+			}
+		});
+	});
+
+	return wrapper;
+}
+
+// --- File viewer decorations (ViewPlugin scans doc for @ lines) ---
+
+const fileViewerPattern = /^@(.+)$/;
+
+const fileViewerDecorations = ViewPlugin.fromClass(
+	class {
+		decorations: DecorationSet;
+
+		constructor(view: EditorView) {
+			this.decorations = this.build(view);
+		}
+
+		update(update: ViewUpdate) {
+			if (update.docChanged || update.viewportChanged) {
+				this.decorations = this.build(update.view);
+			}
+		}
+
+		build(view: EditorView): DecorationSet {
+			const widgets: Range<Decoration>[] = [];
+			for (let i = 1; i <= view.state.doc.lines; i++) {
+				const line = view.state.doc.line(i);
+				const match = line.text.match(fileViewerPattern);
+				if (match) {
+					const deco = Decoration.replace({
+						widget: new FileViewerWidget(match[1]),
+					});
+					widgets.push(deco.range(line.from, line.to));
+				}
+			}
+			return Decoration.set(widgets);
+		}
+	},
+	{ decorations: (v) => v.decorations },
+);
+
 // --- Slash command completion ---
 
 function slashCommandCompletion(context: CompletionContext) {
@@ -512,6 +679,40 @@ function slashCommandCompletion(context: CompletionContext) {
 				},
 			},
 		],
+	};
+}
+
+// --- @ file completion (incremental search) ---
+
+async function fileCompletion(context: CompletionContext) {
+	const line = context.state.doc.lineAt(context.pos);
+	const textBefore = line.text.slice(0, context.pos - line.from);
+	const match = textBefore.match(/^@(.*)$/);
+	if (!match) return null;
+
+	const query = match[1];
+	const from = line.from + 1; // after @
+
+	// Get cwd from nearest terminal
+	const termId = findNearestTerminalAbove(context.view, context.pos);
+	let cwd = "~";
+	if (termId) {
+		const result = await electrobun.rpc!.request.getCwd({ id: termId });
+		if (result.cwd) cwd = result.cwd;
+	}
+
+	if (query.length < 1) {
+		return { from, options: [{ label: "Type to search files...", apply: "" }] };
+	}
+
+	const { files } = await electrobun.rpc!.request.searchFiles({ cwd, query });
+
+	return {
+		from,
+		options: files.map((f) => ({
+			label: f,
+			apply: f,
+		})),
 	};
 }
 
@@ -668,11 +869,12 @@ cmView = new EditorView({
 		javascript(),
 		oneDark,
 		autocompletion({
-			override: [slashCommandCompletion],
+			override: [slashCommandCompletion, fileCompletion],
 			activateOnTyping: true,
 		}),
 		terminalField,
 		buttonDecorations,
+		fileViewerDecorations,
 		termFocusHighlight,
 		autoSave,
 		Prec.highest(termCommand),

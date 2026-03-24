@@ -1,7 +1,7 @@
 import { BrowserView, BrowserWindow, ApplicationMenu, Utils, type RPCSchema } from "electrobun/bun";
 import { spawn } from "bun-pty";
 import { join } from "path";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, watch, type FSWatcher } from "fs";
 
 type TerminalRPC = {
 	bun: RPCSchema<{
@@ -17,6 +17,22 @@ type TerminalRPC = {
 			resize: {
 				params: { id: string; cols: number; rows: number };
 				response: { success: boolean };
+			};
+			readFile: {
+				params: { path: string; cwd?: string };
+				response: { content: string | null; resolvedPath: string };
+			};
+			watchFile: {
+				params: { path: string; cwd?: string };
+				response: { success: boolean; resolvedPath: string };
+			};
+			unwatchFile: {
+				params: { path: string };
+				response: { success: boolean };
+			};
+			searchFiles: {
+				params: { cwd: string; query: string };
+				response: { files: string[] };
 			};
 			saveDoc: {
 				params: { content: string };
@@ -36,6 +52,7 @@ type TerminalRPC = {
 		messages: {
 			output: { id: string; data: string };
 			terminalExited: { id: string; exitCode: number };
+			fileChanged: { path: string; content: string };
 		};
 	}>;
 };
@@ -104,6 +121,26 @@ function createPty(cols: number, rows: number, cwd?: string): string {
 	return id;
 }
 
+// File watcher management
+const fileWatchers = new Map<string, FSWatcher>();
+
+function resolveFilePath(p: string, cwd?: string): string {
+	if (p.startsWith("~/")) return join(Bun.env["HOME"] || "/", p.slice(2));
+	if (p.startsWith("/")) return p;
+	// Relative path: resolve from cwd
+	return join(cwd || Bun.env["HOME"] || "/", p);
+}
+
+function readFileContent(path: string, cwd?: string): { content: string | null; resolvedPath: string } {
+	const resolved = resolveFilePath(path, cwd);
+	if (!existsSync(resolved)) return { content: null, resolvedPath: resolved };
+	try {
+		return { content: require("fs").readFileSync(resolved, "utf-8"), resolvedPath: resolved };
+	} catch {
+		return { content: null, resolvedPath: resolved };
+	}
+}
+
 const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
 	maxRequestTime: 10000,
 	handlers: {
@@ -125,6 +162,59 @@ const terminalRPC = BrowserView.defineRPC<TerminalRPC>({
 				} catch {
 					return { cwd: null };
 				}
+			},
+			readFile: ({ path, cwd }) => {
+				return readFileContent(path, cwd);
+			},
+			watchFile: ({ path, cwd }) => {
+				const resolved = resolveFilePath(path, cwd);
+				if (fileWatchers.has(resolved)) return { success: true, resolvedPath: resolved };
+				if (!existsSync(resolved)) return { success: false, resolvedPath: resolved };
+				try {
+					let debounce: ReturnType<typeof setTimeout> | null = null;
+					const watcher = watch(resolved, () => {
+						if (debounce) clearTimeout(debounce);
+						debounce = setTimeout(() => {
+							const { content } = readFileContent(resolved);
+							if (content !== null) {
+								terminalRPC.send.fileChanged({ path: resolved, content });
+							}
+						}, 100);
+					});
+					fileWatchers.set(resolved, watcher);
+					return { success: true, resolvedPath: resolved };
+				} catch {
+					return { success: false, resolvedPath: resolved };
+				}
+			},
+			searchFiles: ({ cwd, query }) => {
+				const resolved = resolveCwd(cwd);
+				try {
+					const result = Bun.spawnSync({
+						cmd: ["find", resolved, "-maxdepth", "4", "-type", "f",
+							"-not", "-path", "*/node_modules/*",
+							"-not", "-path", "*/.git/*",
+							"-not", "-path", "*/.*",
+							"-name", `*${query}*`],
+						timeout: 2000,
+					});
+					const output = result.stdout.toString().trim();
+					if (!output) return { files: [] };
+					const files = output.split("\n")
+						.map(f => f.replace(resolved + "/", ""))
+						.slice(0, 20);
+					return { files };
+				} catch {
+					return { files: [] };
+				}
+			},
+			unwatchFile: ({ path }) => {
+				const watcher = fileWatchers.get(path);
+				if (watcher) {
+					watcher.close();
+					fileWatchers.delete(path);
+				}
+				return { success: true };
 			},
 			saveDoc: async ({ content }) => {
 				await Bun.write(docPath, content);
