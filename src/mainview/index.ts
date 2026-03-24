@@ -79,12 +79,16 @@ function createInlineTerminal(termId: string, view: EditorView): HTMLElement {
 	const outer = document.createElement("div");
 	outer.className = "inline-terminal-wrapper";
 
+	const statusBar = document.createElement("div");
+	statusBar.className = "inline-terminal-status";
+
 	const termEl = document.createElement("div");
 	termEl.className = "inline-terminal";
 
 	const resizeHandle = document.createElement("div");
 	resizeHandle.className = "inline-terminal-resize";
 
+	outer.appendChild(statusBar);
 	outer.appendChild(termEl);
 	outer.appendChild(resizeHandle);
 
@@ -105,7 +109,35 @@ function createInlineTerminal(termId: string, view: EditorView): HTMLElement {
 	t.loadAddon(fit);
 	t.open(termEl);
 
-	outputHandlers.set(termId, (data) => t.write(data));
+	// OSC 133 detection for command state
+	const osc133Re = /\x1b\]133;([A-D])(;(\d+))?\x07/g;
+
+	outputHandlers.set(termId, (data) => {
+		// Detect OSC 133 sequences
+		let match;
+		while ((match = osc133Re.exec(data)) !== null) {
+			const code = match[1];
+			if (code === "C") {
+				// Command execution started
+				statusBar.className = "inline-terminal-status running";
+			} else if (code === "D") {
+				// Command finished
+				const exitCode = match[3] ? parseInt(match[3], 10) : 0;
+				statusBar.className = exitCode === 0
+					? "inline-terminal-status success"
+					: "inline-terminal-status error";
+				// Reset to idle after animation
+				setTimeout(() => {
+					statusBar.className = "inline-terminal-status";
+				}, 2000);
+			} else if (code === "A") {
+				// Prompt start - idle
+				statusBar.className = "inline-terminal-status";
+			}
+		}
+		osc133Re.lastIndex = 0;
+		t.write(data);
+	});
 
 	t.onData((data) => {
 		electrobun.rpc!.send.input({ id: termId, data });

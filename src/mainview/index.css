@@ -26,10 +26,65 @@ body {
 	position: relative;
 }
 
+.inline-terminal-status {
+	height: 2px;
+	border-radius: 4px 4px 0 0;
+	background: transparent;
+	overflow: hidden;
+	position: relative;
+}
+
+.inline-terminal-status.running {
+	background: linear-gradient(90deg, transparent, #528bff, transparent);
+	background-size: 200% 100%;
+	animation: status-running 1.2s ease-in-out infinite;
+}
+
+.inline-terminal-status.success {
+	background: #98c379;
+	animation: status-fade 2s ease-out forwards;
+}
+
+.inline-terminal-status.error {
+	background: #e06c75;
+	animation: status-flash 0.3s ease-in-out 3, status-fade 2s ease-out 0.9s forwards;
+}
+
+@keyframes status-running {
+	0% {
+		background-position: -200% 0;
+	}
+	100% {
+		background-position: 200% 0;
+	}
+}
+
+@keyframes status-fade {
+	0% {
+		opacity: 1;
+	}
+	70% {
+		opacity: 1;
+	}
+	100% {
+		opacity: 0;
+	}
+}
+
+@keyframes status-flash {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.3;
+	}
+}
+
 .inline-terminal {
 	height: 66px;
 	border: 1px solid #444;
-	border-radius: 4px;
+	border-radius: 0 0 4px 4px;
 	overflow: hidden;
 }
 
